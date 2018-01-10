@@ -19,6 +19,54 @@ import gPhoton.galextools as gxt
 import gPhoton.gQuery as gQuery
 from gPhoton.gQuery import tscale
 import gPhoton.MCUtils as mc
+from gPhoton import __version__
+
+# ------------------------------------------------------------------------------
+def bg_contamination(band, skypos, radius, annulus=None):
+    """
+    Identify coadd MCAT sources that may contaminate the target observation.
+    Uses a hard cutoff of 25 magnitude.
+
+    :param band: The band being used, either 'FUV' or 'NUV'.
+
+    :type band: str
+
+    :param skypos: A two-element list containing the RA and DEC.
+
+    :type skypos: list
+
+    :param radius: Radius of the photometric aperture in degrees.
+
+    :type radius: float
+
+    :param annulus: A two-element list containing the inner and outer radius
+        to use for background subtraction during aperture photometry, in
+        degrees.
+
+    :type annulus: list
+
+    :returns: tuple -- Elements are: [1] number of coadd sources within the
+        aperture, [2] number of coadd sources within the background annulus,
+        [3] magnitude of brightnest source within the background annulus. If
+        no annulus is specified then [2] and [3] are set to None.
+    """
+
+    bgsources = dbt.get_mags(band,skypos[0],skypos[1],
+                    radius if annulus is None else annulus[1],25,verbose=0)
+    if bgsources is None:
+        return None, None, None
+    mcatdist = mc.angularSeparation(skypos[0],skypos[1],
+                                        bgsources['ra'],bgsources['dec'])
+    apsourcecnt = np.where(mcatdist<=radius)[0].shape[0]
+    bgsourcecnt,bgsourcemag=None,None
+    if annulus is not None:
+        bg_ix = np.where((annulus[0]<mcatdist) &
+                               (mcatdist<=annulus[1]))
+        bgsourcecnt = bg_ix[0].shape[0]
+        if bgsourcecnt:
+            bgsourcemag = bgsources[band]['mag'][bg_ix].max()
+    return apsourcecnt, bgsourcecnt, bgsourcemag
+# ------------------------------------------------------------------------------
 
 # ------------------------------------------------------------------------------
 def gphot_params(band, skypos, radius, annulus=None, verbose=0, detsize=1.25,
@@ -62,13 +110,17 @@ def gphot_params(band, skypos, radius, annulus=None, verbose=0, detsize=1.25,
 
     :returns: dict -- The set of parameters that are constant across all bins.
     """
+    apsourcecnt, bgsourcecnt, bgsourcemag = bg_contamination(
+                                        band, skypos, radius, annulus=annulus)
 
     return {'band':band, 'ra0':skypos[0], 'dec0':skypos[1], 'skypos':skypos,
             'trange':trange, 'radius':radius, 'annulus':annulus,
             'stepsz':stepsz, 'verbose':verbose, 'detsize':detsize,
             'apcorrect1':gxt.apcorrect1(radius, band),
             'apcorrect2':gxt.apcorrect2(radius, band),
-            'detbg':gxt.detbg(mc.area(radius), band)}
+            'detbg':gxt.detbg(mc.area(radius), band),
+            'n_apersources':apsourcecnt,'n_bgsources':bgsourcecnt,
+            'max_bgmag':bgsourcemag,'version':__version__,}
 # ------------------------------------------------------------------------------
 
 # ------------------------------------------------------------------------------
@@ -413,6 +465,8 @@ def reduce_lcurve(bin_ix, region_ix, data, function, dtype='float64'):
     output = np.empty(len(bin_num))
 
     for i, b in enumerate(bin_num):
+        if len(np.where(bin_ix[region_ix]==b)[0])==0:
+            continue
         try:
             ix = region_ix[0][np.where(bin_ix[region_ix] == b)]
             output[i] = function(data[ix])
@@ -1051,7 +1105,7 @@ def get_curve(band, ra0, dec0, radius, annulus=None, stepsz=None,
         tranges = dbt.fGetTimeRanges(band, [ra0, dec0], trange=trange,
                                      maxgap=maxgap, minexp=minexp,
                                      verbose=verbose, detsize=detsize)
-    if not np.array(tranges).shape[1]:
+    if not len(np.array(tranges).flatten()):
         if verbose:
             mc.print_inline(
                 "No exposure time at this location: [{ra},{dec}]".format(
@@ -1073,7 +1127,8 @@ def get_curve(band, ra0, dec0, radius, annulus=None, stepsz=None,
 def write_curve(band, ra0, dec0, radius, csvfile=None, annulus=None,
                 stepsz=None, trange=None, tranges=None, verbose=0, coadd=False,
                 iocode='w', detsize=1.1, overwrite=False, minexp=1., maxgap=1.,
-                minimal_output=False, photoncsvfile=None):
+                minimal_output=False, photoncsvfile=None, addhdr=False,
+                commentchar='|'):
     """
     Generates a lightcurve and optionally writes the data to a CSV file.
 
@@ -1238,10 +1293,15 @@ def write_curve(band, ra0, dec0, radius, csvfile=None, annulus=None,
                 print('Unable to build dataframe.')
             raise ValueError("Unable to build dataframe.")
         try:
-            output.to_csv(csvfile, index=False, mode=iocode, columns=columns)
+            if addhdr:
+                with open(csvfile, iocode) as f:
+                    for k in data['params'].keys():
+                        f.write('{c} {k} = {v}\n'.format(
+                            c=commentchar,k=k,v=data['params'][k]))
+            output.to_csv(csvfile, index=False, mode='a' if addhdr else iocode,
+                          columns=columns)
         except:
             print('Unable to write to: '+str(csvfile))
-
     else:
         if verbose > 2:
             print("No CSV file requested.")

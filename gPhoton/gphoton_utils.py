@@ -9,11 +9,13 @@
 from __future__ import absolute_import, division, print_function
 # Core and Third Party imports.
 from astropy.time import Time
+import scipy.stats
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 # gPhoton imports.
 import gPhoton.galextools as gt
+import gPhoton.dbasetools as dt
 
 # ------------------------------------------------------------------------------
 def read_lc(csvfile, comment='|'):
@@ -199,7 +201,7 @@ def calculate_jd(galex_time):
     :type galex_time: float
 
     :returns: float -- The time converted to a Julian date, in the TDB
-    time standard.
+        time standard.
     """
 
     if np.isfinite(galex_time):
@@ -226,7 +228,7 @@ def calculate_jd_utc(galex_time):
     :type galex_time: float
 
     :returns: float -- The time converted to a Julian date, in the UTC
-    time standard.
+        time standard.
     """
 
     if np.isfinite(galex_time):
@@ -253,7 +255,7 @@ def calculate_jd_tai(galex_time):
     :type galex_time: float
 
     :returns: float -- The time converted to a Julian date, in the TAI
-    time standard.
+        time standard.
     """
 
     if np.isfinite(galex_time):
@@ -281,7 +283,7 @@ def calculate_caldat(galex_time):
     :type galex_time: float
 
     :returns: float -- The time converted to a Gregorian calendar date,
-    in the UTC time standard.
+        in the UTC time standard.
     """
 
     if np.isfinite(galex_time):
@@ -298,3 +300,109 @@ def calculate_caldat(galex_time):
     return this_caldat_time
 # ------------------------------------------------------------------------------
 
+# ------------------------------------------------------------------------------
+def checkplot(csvfile,outfile=None,format='png',maxgap=500,imscale=4,
+              nplots=10,cleanup=False):
+    """
+    Read a gAperture lighturve file and write diagnostic images of the
+    brightness on a 'per-visit' basis with error bars and flagged bins
+    indicated, alongside plots of common parameters that are correlated to
+    false variabilty due to detector effects.
+
+    :param csvfile: The filename of a gAperture lightcurve file.
+
+    :type csvfile: string
+
+    :param outfile: The base filename for output images.
+
+    :type outfile: string
+
+    :param format: The image format for output images.
+
+    :type format: string
+
+    :param maxgap: The maximum gap in seconds for bins to be considered
+        contiguous (i.e. part of the same visit).
+
+    :type maxgap: float
+
+    :param imscale: A scale factor for image size.
+
+    :type imscale: int
+
+    :param nplots: The number of visits to be written to a single image before
+        a new image is initiated.
+
+    :type nplots: int
+
+    :param cleanup: Close all matplotlib images when done. NOTE: Broken.
+
+    :type cleanup: bool
+
+    :returns: float -- The time converted to a Julian date, in the TAI
+        time standard.
+    """
+
+    def crosscorr_title(a,b):
+        return '{pearsonr}, {spearmanr}, {kendalltau}'.format(
+            pearsonr=round(scipy.stats.pearsonr(a,b)[0],2),
+            spearmanr=round(scipy.stats.spearmanr(a,b)[0],2),
+            kendalltau=round(scipy.stats.kendalltau(a,b)[0],2))
+
+    lc = read_lc(csvfile)
+    tranges = dt.distinct_tranges(np.array(lc['t0']),maxgap=500)
+    stepsz = np.median(lc['t1']-lc['t0']) # sort of a guess at stepsz
+    n=2 # temporary hacking variable for number of rows in figure
+    for j in range(np.int(np.ceil(len(tranges)/float(nplots)))):
+        plt.figure(
+            figsize=(imscale*(len(tranges[j*nplots:(j+1)*nplots])),imscale*n))
+        for i, trange in enumerate(tranges[j*nplots:(j+1)*nplots]):
+            # Countrate
+            plt.subplot(n, len(tranges[j*nplots:(j+1)*nplots]),i+1+len(tranges[j*nplots:(j+1)*nplots])*0)
+            plt.xticks([])
+            if i==0:
+                plt.ylabel('cps_mcatbgsub')
+            plt.ylim((lc['cps_mcatbgsub']-2*5*lc['cps_mcatbgsub_err']).min(),
+                     (lc['cps_mcatbgsub']+2*5*lc['cps_mcatbgsub_err']).max())
+            time_ix = np.where((np.array(lc['t0'])>=trange[0]) &
+                                           (np.array(lc['t1'])<=trange[1]))
+            if not len(time_ix[0]):
+                continue
+            tlim = (np.array(lc['t0'])[time_ix].min()-stepsz,
+                    np.array(lc['t1'])[time_ix].max()+stepsz)
+            plt.xlim(tlim[0],tlim[1])
+            for nsigma in [5]:
+                plt.errorbar(np.array(lc['t_mean'])[time_ix],
+                    np.array(lc['cps_mcatbgsub'])[time_ix],
+                    yerr=nsigma*np.array(lc['cps_mcatbgsub_err'])[time_ix],fmt='k.')
+            flag_ix = np.where(np.array(lc['flags'])[time_ix]>0)
+            plt.plot(np.array(lc['t_mean'])[time_ix][flag_ix],
+                np.array(lc['cps_mcatbgsub'])[time_ix][flag_ix],'rx')
+
+            # Detector Radius
+            plt.subplot(n, len(tranges[j*nplots:(j+1)*nplots]),i+1+len(tranges[j*nplots:(j+1)*nplots])*1)
+            plt.xticks([])
+            if i==0:
+                plt.ylabel('detrad')
+            plt.xlim(tlim[0],tlim[1])
+            plt.ylim(np.array(lc['detrad'])[time_ix].min()-2,
+                     np.array(lc['detrad'])[time_ix].max()+2)
+            plt.plot(np.array(lc['t_mean'])[time_ix],
+                     np.array(lc['detrad'])[time_ix],'k.')
+            plt.plot(np.array(lc['t_mean'])[time_ix][flag_ix],
+                     np.array(lc['detrad'])[time_ix][flag_ix],'rx')
+            plt.title(crosscorr_title(
+                        np.array(lc['cps_mcatbgsub_err'])[time_ix],
+                        np.array(lc['detrad'])[time_ix]))
+
+        plt.tight_layout()
+        if outfile:
+            if len(tranges)>nplots:
+                plt.savefig('{base}_{j}{type}'.format(
+                    base=outfile[:-4],j=j,type=outfile[-4:]),dpi=300)
+            else:
+                plt.savefig(outfile,dpi=300)
+        if cleanup: # This seems to not work for some reason... ?
+            plt.close('all')
+    return
+# ------------------------------------------------------------------------------

@@ -169,6 +169,9 @@ def fits_header(band, skypos, tranges, skyrange, verbose=0, hdu=None,
     hdu.header['EQUINOX'], hdu.header['EPOCH'] = 2000., 2000.
     hdu.header['BAND'] = 1 if band == 'NUV' else 2
     hdu.header['VERSION'] = 'v{v}'.format(v=__version__)
+    hdu.header['EXPSTART'] = np.array(tranges).min()
+    hdu.header['EXPEND'] = np.array(tranges).max()
+    hdu.header['EXPTIME'] = sum(t1-t0 for (t0,t1) in tranges)
 
     return hdu
 # ------------------------------------------------------------------------------
@@ -306,23 +309,13 @@ def integrate_map(band, skypos, tranges, skyrange, verbose=0, memlight=None,
     img = np.zeros(np.array(imsz, dtype='int32'))
 
     for trange in tranges:
-        # If memlight is requested, break the integration into
-        # smaller chunks.
-        # [Future]: memlight gives slightly wrong answers right now
-        # This is probably due to a quirk of SQL, per issue #140.
-        # Deprecating memlight until this can be resolved.
-        step = memlight if memlight else trange[1]-trange[0]
+        img += makemap(band, skypos, trange, skyrange,
+            response=response, verbose=verbose, detsize=detsize)
 
-        for i in np.arange(trange[0], trange[1], step):
-            t0, t1 = i, i+step if i+step <= trange[1] else trange[1]
-            if verbose:
-                mc.print_inline('Processing '+str(t0)+' to '+str(t1))
-            img += makemap(band, skypos, [t0, t1], skyrange, response=response,
-                           verbose=verbose, detsize=detsize)
-
-        if response: # This is an intensity map.
-            img /= dbt.compute_exptime(band, trange, skypos=skypos,
-                                       verbose=verbose)
+    if response: # Intensity maps == average countrate maps.
+        expt=np.sum([dbt.compute_exptime(band,trange) for trange in tranges])
+        if expt>0:
+            img/=expt
 
     return img
 # ------------------------------------------------------------------------------
@@ -441,6 +434,9 @@ def movie(band, skypos, tranges, skyrange, framesz=0, verbose=0,
     if verbose:
         print(tranges)
 
+    if len(np.shape(tranges))==1:
+        tranges=[tranges]
+
     if coadd or (len(tranges) == 1 and not framesz) or (not len(tranges)):
         if verbose > 2:
             print('Coadding across '+str(tranges))
@@ -450,32 +446,43 @@ def movie(band, skypos, tranges, skyrange, framesz=0, verbose=0,
                            hdu=hdu, retries=retries, response=response,
                            detsize=detsize)
     else:
+        mv = np.array(None) # Initialize to error gracefully in the case of no data
         for trange in tranges:
             stepsz = framesz if framesz else trange[1]-trange[0]
             try:
                 steps = np.ceil((trange[1]-trange[0])/stepsz)
             except IndexError:
-                return None # There is no data.
-            for i, t0 in enumerate(np.arange(trange[0], trange[1], stepsz)):
-                if verbose > 1:
-                    mc.print_inline('Movie frame '+str(i+1)+' of '+
-                                    str(int(steps)))
-                t1 = trange[1] if i == steps else t0+stepsz
-
+                return None # expt_raw == 0
+            if framesz==0:
+                trs=[trange]
+            else:
+                tsteps = np.arange(trange[0],trange[1],framesz)
+                trs = np.vstack([tsteps,np.append(tsteps[1:],trange[1])]).T
+            for tr in trs:
+                t0,t1=tr
                 img = integrate_map(band, skypos, [[t0, t1]], skyrange,
                                     verbose=verbose,
                                     memlight=memlight, hdu=hdu, retries=retries,
                                     response=response, detsize=detsize)
-                if img.min() == 0 and img.max() == 0:
+                if (img.min() == 0 and img.max() == 0) or (not
+                                                np.isfinite(img).any()):
                     if verbose > 1:
                         print('No data in frame {i}. Skipping...'.format(i=i))
                     continue
-                try:
-                    mv.append(img)
-                except:
-                    mv = [img]
+                else:
+                    try:
+                        mv.append(img)
+                    except:
+                        mv = [img]
+
+    try:
+        if len(np.where(mv>0)[0])==0:
+            return np.array(None)
+    except TypeError:
+        pass
 
     return np.array(mv)
+
 # ------------------------------------------------------------------------------
 
 # ------------------------------------------------------------------------------
@@ -627,14 +634,9 @@ def write_images(band, skypos, tranges, skyrange, write_cnt=None,
             continue
 
         img = create_image(band, skypos, tranges, skyrange, framesz=framesz,
-                           verbose=verbose,
-                           memlight=memlight, retries=retries, detsize=detsize,
-                           coadd=(
-                               True if (coadd or i in ['cnt_coadd',
-                                                       'int_coadd']) else
-                               False),
-                           response=(
-                               True if i in ['int', 'int_coadd'] else False))
+            verbose=verbose, memlight=memlight, retries=retries, detsize=detsize,
+            coadd=coadd or i in ['cnt_coadd','int_coadd'],
+            response=i in ['int', 'int_coadd'])
         if img.tolist() is None:
             if verbose:
                 print('No data found.')
@@ -653,7 +655,7 @@ def write_images(band, skypos, tranges, skyrange, write_cnt=None,
         if verbose:
             print('Writing image to {o}'.format(o=imtypes[i]))
 
-        hdulist.writeto(imtypes[i], clobber=overwrite)
+        hdulist.writeto(imtypes[i], overwrite=overwrite)
 
     return
 # ------------------------------------------------------------------------------

@@ -1,24 +1,26 @@
-**Procedure for testing:**
+**Procedure for Regression Testing:**
+1. Remove commented block in tests/test_gAperture_regr.py and run nosetests in a local build. Confirm success, or justify failure and change the tests as needed. (Don't commit this change. This block of code takes a while to run and so makes Travis-CI time out / error.)
+
+**Procedure for testing the build:**
 1. Make a clean clone / fetch / checkout of the branch.
     git clone https://github.com/cmillion/gPhoton
     cd gPhoton
     git fetch
     git checkout -b BRANCH
     git pull origin BRANCH
-2. Run `python setup.py sdist` from the checkout directory to generate a dist file (in ./dist/) with the correct naming convention.
-3. Copy that tar.gz file into your Public Dropbox directory and copy the link.
-4. Replace download_url in setup.py with that link.
-5. Run `python setup.py register -r pypitest`
-6. Rerun `python setup.py sdist` and replace the version in the Public Dropbox with the resulting tar.gz.
-7. `pip install -i https://testpypi.python.org/pypi gPhoton`
-8. Run any tests.
-9. `pip uninstall gPhoton`
+2. Register the test distribution with testPyPI: `python setup.py register -r https://testpypi.python.org/pypi`
+3. Build and upload the distribution file to testPyPI: `python setup.py sdist upload -r https://testpypi.python.org/pypi`
+4. Install the new version from testPyPI: `pip install -i https://testpypi.python.org/pypi gPhoton`
+5. Run any desired tests. A few gAperture commands from the User Guide should be fine.
+6. `pip uninstall gPhoton`
 
 **Procedure for building:**
-Identical to above except that `pypitest` becomes `pypi` everywhere, and the download_url points to MAST, which means that someone needs to put the tar.gz in the appropriate place there.
+The main PyPI server no longer requires a registration server after the first time. You just upload the file, so...
+0. Merge BRACH into Master.
+1. Create a distribution file with: `python setup.py sdist`
+2. Upload the file (securely): `twine upload dist/*`
+3. Install gPhoton: `pip install gPhoton`
 
-`python setup.py register -r pypi`
-
-`python setup.py sdist`
-
-`pip install -i https://pypi.python.org/pypi gPhoton`
+**After building:**
+1. Move a copy of the `tar.gz` build file to the appropriate long term home in the MAST archive.
+2. Tag this as a "release" on github. Include the build file as an attachment.
